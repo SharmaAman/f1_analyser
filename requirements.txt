@@ -6,3 +6,8 @@ numpy
 matplotlib
 seaborn
 statsmodels
+fastf1
+streamlit
+pandas
+numpy
+plotly

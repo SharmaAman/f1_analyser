@@ -1,176 +1,285 @@
 import streamlit as st
 import fastf1
 import pandas as pd
+import numpy as np
 import plotly.express as px
 import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 from datetime import datetime
+import time
+from utils import plot_speed_trace, analyze_sector_performance, get_latest_session, load_session_data
 
-# Enable FastF1 cache
 fastf1.Cache.enable_cache('cache')
 
-# Set page config
 st.set_page_config(
-    page_title="F1 Analysis Hub",
+    page_title="Aman's Formula 1 Analyser",
     page_icon="🏎️",
-    layout="wide"
+    layout="wide",
 )
 
-# Add title and description
-st.title("🏎️ Formula 1 Analysis Hub")
-st.markdown("Explore F1 race data with interactive visualizations")
+st.title("🏎️ Aman's Formula 1 Analyser - Analytics Project")
 
-# Sidebar for user inputs
-st.sidebar.header("Select Race Details")
+st.markdown("### Select Parameters")
+col1, col2, col3, col4 = st.columns(4)
 
-# Get available years (you might want to limit this range)
-years = list(range(2024, 2017, -1))
-selected_year = st.sidebar.selectbox("Select Year", years)
+with col1:
+    years = list(range(2024, 2017, -1))
+    selected_year = st.selectbox("Year", years, index=0)
 
+with col2:
+    try:
+        schedule = fastf1.get_event_schedule(selected_year)
+        races = schedule['EventName'].tolist()
+        latest_race_index = 0
+        for idx, race in enumerate(races):
+            session, _ = get_latest_session(selected_year, race)
+            if session is not None:
+                latest_race_index = idx
+                break
+        selected_race = st.selectbox("Circuit", races, index=latest_race_index)
+    except Exception as e:
+        st.error(f"Error loading race schedule: {str(e)}")
+        st.stop()
 
-# Load available races for selected year
-@st.cache_data
-def load_races(year):
-    schedule = fastf1.get_event_schedule(year)
-    return schedule
+latest_session, session_type_name = get_latest_session(selected_year, selected_race)
 
-
-try:
-    schedule = load_races(selected_year)
-    races = schedule['EventName'].tolist()
-    selected_race = st.sidebar.selectbox("Select Race", races)
-
-    # Session selection
+with col3:
     session_types = ['Race', 'Qualifying', 'Sprint', 'Practice 3', 'Practice 2', 'Practice 1']
-    selected_session = st.sidebar.selectbox("Select Session", session_types)
+    default_index = session_types.index(session_type_name) if session_type_name in session_types else 0
+    selected_session = st.selectbox("Session", session_types, index=default_index)
 
+session_mapping = {
+    'Race': 'R',
+    'Qualifying': 'Q',
+    'Sprint': 'S',
+    'Practice 3': 'FP3',
+    'Practice 2': 'FP2',
+    'Practice 1': 'FP1'
+}
 
-    # Load session data
-    @st.cache_data
-    def load_session_data(year, race, session):
-        session_map = {
-            'Race': 'R',
-            'Qualifying': 'Q',
-            'Sprint': 'S',
-            'Practice 3': 'FP3',
-            'Practice 2': 'FP2',
-            'Practice 1': 'FP1'
-        }
-        session = fastf1.get_session(year, race, session_map[session])
-        session.load()
-        return session
+with st.spinner('Loading session data...'):
+    session = load_session_data(selected_year, selected_race, session_mapping[selected_session])
 
+    if session is not None:
+        drivers = pd.unique(session.laps['Driver']).tolist()
+        constructors = pd.unique(session.laps['Team']).tolist()
 
-    with st.spinner('Loading session data...'):
-        session = load_session_data(selected_year, selected_race, selected_session)
+        st.markdown("### Select Competitors")
+        col1, col2, col3, col4 = st.columns(4)
 
-    # Get list of drivers
-    drivers = pd.unique(session.laps['Driver']).tolist()
-    selected_drivers = st.sidebar.multiselect("Select Drivers", drivers, default=drivers[:2])
+        with col1:
+            primary_driver = st.selectbox("Primary Driver", drivers, index=0)
+        with col2:
+            primary_constructor = st.selectbox("Primary Constructor", constructors, index=0)
+        with col3:
+            secondary_drivers = st.multiselect(
+                "Secondary Driver(s)",
+                [d for d in drivers if d != primary_driver],
+                default=[drivers[1]] if len(drivers) > 1 else []
+            )
+        with col4:
+            secondary_constructors = st.multiselect(
+                "Secondary Constructor(s)",
+                [c for c in constructors if c != primary_constructor],
+                default=[constructors[1]] if len(constructors) > 1 else []
+            )
 
-    # Analysis Options
-    analysis_type = st.sidebar.selectbox(
-        "Select Analysis Type",
-        ["Lap Times Comparison", "Speed Analysis", "Position Changes", "Tire Strategy"]
-    )
+        st.divider()
 
-    # Main content area
-    st.header(f"{selected_race} {selected_year} - {selected_session} Analysis")
+        st.header("1. Basic Session Analysis")
 
-    if analysis_type == "Lap Times Comparison":
-        st.subheader("Lap Times Comparison")
+        col1, col2 = st.columns(2)
 
-        fig = go.Figure()
-        for driver in selected_drivers:
-            driver_laps = session.laps.pick_driver(driver)
-            fig.add_trace(go.Scatter(
-                x=driver_laps['LapNumber'],
-                y=driver_laps['LapTime'].dt.total_seconds(),
-                name=driver,
-                mode='lines+markers'
-            ))
+        with col1:
+            st.subheader("Driver Position Progression")
+            st.caption("Track position changes throughout the session")
 
-        fig.update_layout(
-            xaxis_title="Lap Number",
-            yaxis_title="Lap Time (seconds)",
-            hovermode='x unified'
-        )
-        st.plotly_chart(fig, use_container_width=True)
-
-    elif analysis_type == "Speed Analysis":
-        st.subheader("Speed Analysis")
-
-        fig = go.Figure()
-        for driver in selected_drivers:
-            driver_laps = session.laps.pick_driver(driver)
-            fig.add_trace(go.Box(
-                y=driver_laps['SpeedI1'],
-                name=f"{driver} - Sector 1",
-                boxpoints='all'
-            ))
-            fig.add_trace(go.Box(
-                y=driver_laps['SpeedI2'],
-                name=f"{driver} - Sector 2",
-                boxpoints='all'
-            ))
-            fig.add_trace(go.Box(
-                y=driver_laps['SpeedFL'],
-                name=f"{driver} - Final",
-                boxpoints='all'
-            ))
-
-        fig.update_layout(
-            yaxis_title="Speed (km/h)",
-            boxmode='group'
-        )
-        st.plotly_chart(fig, use_container_width=True)
-
-    elif analysis_type == "Position Changes":
-        st.subheader("Position Changes Through Race")
-
-        if selected_session == "Race":
-            fig = go.Figure()
-            for driver in selected_drivers:
-                driver_laps = session.laps.pick_driver(driver)
-                fig.add_trace(go.Scatter(
-                    x=driver_laps['LapNumber'],
-                    y=driver_laps['Position'],
-                    name=driver,
-                    mode='lines+markers'
+            if selected_session == "Race":
+                position_fig = go.Figure()
+                position_fig.add_trace(go.Scatter(
+                    x=session.laps.pick_driver(primary_driver)['LapNumber'],
+                    y=session.laps.pick_driver(primary_driver)['Position'],
+                    name=primary_driver,
+                    line=dict(color='red', width=3)
                 ))
 
-            fig.update_layout(
-                xaxis_title="Lap Number",
-                yaxis_title="Position",
-                yaxis_autorange="reversed"
+                for driver in secondary_drivers:
+                    position_fig.add_trace(go.Scatter(
+                        x=session.laps.pick_driver(driver)['LapNumber'],
+                        y=session.laps.pick_driver(driver)['Position'],
+                        name=driver,
+                        line=dict(width=2)
+                    ))
+
+                position_fig.update_layout(
+                    yaxis_autorange="reversed",
+                    yaxis_title="Position",
+                    xaxis_title="Lap Number"
+                )
+                st.plotly_chart(position_fig, use_container_width=True)
+            else:
+                st.info("Position progression is only available for race sessions")
+
+        with col2:
+            st.subheader("Lap Time Distribution")
+            st.caption("Distribution of lap times showing consistency and outliers")
+
+            laptimes_fig = go.Figure()
+            primary_laps = session.laps.pick_driver(primary_driver)['LapTime'].dt.total_seconds()
+
+            laptimes_fig.add_trace(go.Histogram(
+                x=primary_laps,
+                name=primary_driver,
+                nbinsx=30,
+                opacity=0.7
+            ))
+
+            for driver in secondary_drivers:
+                driver_laps = session.laps.pick_driver(driver)['LapTime'].dt.total_seconds()
+                laptimes_fig.add_trace(go.Histogram(
+                    x=driver_laps,
+                    name=driver,
+                    nbinsx=30,
+                    opacity=0.5
+                ))
+
+            laptimes_fig.update_layout(
+                barmode='overlay',
+                xaxis_title="Lap Time (seconds)",
+                yaxis_title="Count"
             )
-            st.plotly_chart(fig, use_container_width=True)
-        else:
-            st.info("Position changes analysis is only available for race sessions.")
+            st.plotly_chart(laptimes_fig, use_container_width=True)
 
-    elif analysis_type == "Tire Strategy":
-        st.subheader("Tire Strategy Analysis")
+        st.header("2. Sector Analysis")
 
-        for driver in selected_drivers:
-            driver_stints = session.laps.pick_driver(driver).groupby('Stint')['Compound'].first()
-            st.write(f"**{driver}'s Tire Strategy:**")
+        col1, col2 = st.columns(2)
 
-            stint_data = []
-            for stint, compound in driver_stints.items():
-                stint_laps = session.laps.pick_driver(driver).query(f"Stint == {stint}")
-                stint_data.append({
-                    'Stint': stint,
-                    'Compound': compound,
-                    'Laps': len(stint_laps),
-                    'Avg Time': stint_laps['LapTime'].mean().total_seconds()
-                })
+        with col1:
+            st.subheader("Sector Times Comparison")
+            st.caption("Detailed breakdown of sector performance")
 
-            stint_df = pd.DataFrame(stint_data)
-            st.dataframe(stint_df)
+            sector_fig = go.Figure()
+            primary_sectors = session.laps.pick_driver(primary_driver)
 
-except Exception as e:
-    st.error(f"An error occurred: {str(e)}")
-    st.info("This might be due to missing data for the selected combination. Please try different parameters.")
+            sectors = ['Sector1Time', 'Sector2Time', 'Sector3Time']
+            for sector in sectors:
+                sector_fig.add_trace(go.Box(
+                    y=primary_sectors[sector].dt.total_seconds(),
+                    name=f"{primary_driver} {sector[:-4]}",
+                    boxpoints='outliers'
+                ))
 
-# Footer
-st.markdown("---")
-st.markdown("Created with FastF1 and Streamlit")
+            for driver in secondary_drivers:
+                driver_sectors = session.laps.pick_driver(driver)
+                for sector in sectors:
+                    sector_fig.add_trace(go.Box(
+                        y=driver_sectors[sector].dt.total_seconds(),
+                        name=f"{driver} {sector[:-4]}",
+                        boxpoints='outliers'
+                    ))
+
+            st.plotly_chart(sector_fig, use_container_width=True)
+
+        with col2:
+            st.subheader("Speed Analysis")
+            st.caption("Speed comparison across different track sections")
+
+            speed_fig = make_subplots(rows=3, cols=1,
+                                      subplot_titles=('Speed Trap 1', 'Speed Trap 2', 'Finish Line'))
+
+            primary_laps = session.laps.pick_driver(primary_driver)
+            speed_metrics = ['SpeedI1', 'SpeedI2', 'SpeedFL']
+
+            for idx, metric in enumerate(speed_metrics, 1):
+                speed_fig.add_trace(
+                    go.Box(y=primary_laps[metric], name=primary_driver,
+                           boxpoints='outliers'), row=idx, col=1
+                )
+
+                for driver in secondary_drivers:
+                    driver_laps = session.laps.pick_driver(driver)
+                    speed_fig.add_trace(
+                        go.Box(y=driver_laps[metric], name=driver,
+                               boxpoints='outliers'), row=idx, col=1
+                    )
+
+            speed_fig.update_layout(height=800, showlegend=False)
+            st.plotly_chart(speed_fig, use_container_width=True)
+
+        st.header("3. Advanced Telemetry")
+
+        st.subheader("Detailed Lap Analysis")
+        st.caption("Comprehensive telemetry data for selected laps")
+
+        col1, col2 = st.columns([1, 3])
+
+        with col1:
+            primary_laps = session.laps.pick_driver(primary_driver)
+            selected_lap = st.selectbox(
+                "Select Lap Number",
+                options=primary_laps['LapNumber'].astype(int).tolist(),
+                index=len(primary_laps['LapNumber']) // 2
+            )
+
+        with col2:
+            telemetry_fig = plot_speed_trace(primary_laps, selected_lap)
+            if telemetry_fig is not None:
+                st.plotly_chart(telemetry_fig, use_container_width=True)
+
+        if selected_session == "Race":
+            st.header("4. Race Pace Analysis")
+
+            col1, col2 = st.columns(2)
+
+            with col1:
+                st.subheader("Rolling Race Pace")
+                st.caption("5-lap rolling average pace comparison")
+
+                pace_fig = go.Figure()
+                primary_pace = session.laps.pick_driver(primary_driver)['LapTime'].dt.total_seconds()
+                pace_fig.add_trace(go.Scatter(
+                    x=session.laps.pick_driver(primary_driver)['LapNumber'],
+                    y=primary_pace.rolling(window=5).mean(),
+                    name=primary_driver,
+                    line=dict(color='red', width=3)
+                ))
+
+                for driver in secondary_drivers:
+                    driver_pace = session.laps.pick_driver(driver)['LapTime'].dt.total_seconds()
+                    pace_fig.add_trace(go.Scatter(
+                        x=session.laps.pick_driver(driver)['LapNumber'],
+                        y=driver_pace.rolling(window=5).mean(),
+                        name=driver
+                    ))
+
+                st.plotly_chart(pace_fig, use_container_width=True)
+
+            with col2:
+                st.subheader("Gap Evolution")
+                st.caption("Time gap evolution to race leader")
+
+                if len(secondary_drivers) > 0:
+                    gap_fig = go.Figure()
+                    reference_driver = secondary_drivers[0]
+
+                    lap_times_ref = session.laps.pick_driver(reference_driver)['LapTime'].dt.total_seconds()
+                    lap_times_primary = session.laps.pick_driver(primary_driver)['LapTime'].dt.total_seconds()
+
+                    cumulative_gap = (lap_times_primary - lap_times_ref).cumsum()
+
+                    gap_fig.add_trace(go.Scatter(
+                        x=session.laps.pick_driver(primary_driver)['LapNumber'],
+                        y=cumulative_gap,
+                        name=f"{primary_driver} vs {reference_driver}",
+                        line=dict(color='red', width=3)
+                    ))
+
+                    st.plotly_chart(gap_fig, use_container_width=True)
+                else:
+                    st.info("Select secondary drivers to view gap evolution")
+
+    else:
+        st.error("Failed to load session data")
+        st.stop()
+
+st.caption("Created by Aman")
